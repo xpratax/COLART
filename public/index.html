@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>COLART - Desenho Colaborativo</title>
+<link rel="icon" href="favicon.ico">
+<style>
+  body { margin:0; display:flex; flex-direction:column; height:100vh; font-family:sans-serif; }
+  #toolbar { padding:10px; background:#f0f0f0; display:flex; gap:10px; align-items:center; }
+  #canvas { flex:1; border:1px solid #ccc; touch-action: none; }
+  input, button { padding:5px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <input type="text" id="nick" placeholder="Seu nick (opcional)">
+  <input type="text" id="roomCode" placeholder="Código da sala">
+  <button id="createRoomBtn">Criar Sala</button>
+  <button id="joinRoomBtn">Entrar</button>
+  <button id="randomRoomBtn">Sala Aleatória</button>
+  <input type="color" id="colorPicker" value="#000000">
+  <input type="number" id="sizePicker" value="2" min="1" max="10">
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+const supabaseUrl = 'YOUR_SUPABASE_URL'
+const supabaseKey = 'YOUR_SUPABASE_ANON_KEY'
+const supabase = createClient(supabaseUrl, supabaseKey)
+
+let roomId, userId, nickname, strokePath = []
+
+const canvas = document.getElementById('canvas')
+const ctx = canvas.getContext('2d')
+canvas.width = window.innerWidth
+canvas.height = window.innerHeight - document.getElementById('toolbar').offsetHeight
+
+const colorPicker = document.getElementById('colorPicker')
+const sizePicker = document.getElementById('sizePicker')
+
+// Criar Sala
+document.getElementById('createRoomBtn').onclick = async () => {
+  const code = Math.random().toString(36).substr(2, 6).toUpperCase()
+  const { data, error } = await supabase.from('rooms').insert({ code }).select()
+  if(data) {
+    joinRoom(data[0].id)
+  }
+}
+
+// Entrar por Código
+document.getElementById('joinRoomBtn').onclick = async () => {
+  const code = document.getElementById('roomCode').value.toUpperCase()
+  const { data } = await supabase.from('rooms').select().eq('code', code)
+  if(data.length) joinRoom(data[0].id)
+  else alert('Sala não encontrada!')
+}
+
+// Sala Aleatória
+document.getElementById('randomRoomBtn').onclick = async () => {
+  const { data } = await supabase.from('rooms').select().order('created_at', {ascending:true}).limit(1)
+  if(data.length) joinRoom(data[0].id)
+  else alert('Nenhuma sala disponível!')
+}
+
+// Função para entrar na sala
+async function joinRoom(id) {
+  roomId = id
+  nickname = document.getElementById('nick').value || 'colabeiro'
+  
+  // Criar usuário
+  const { data:userData } = await supabase.from('users').insert({ nick: nickname }).select()
+  userId = userData[0].id
+  
+  // Obter ordem na sala
+  const { data:roomUsers } = await supabase.from('room_users').select().eq('room_id', roomId)
+  const order = roomUsers.length + 1
+  const finalNick = nickname === 'colabeiro' ? `colabeiro${order}` : nickname
+  
+  await supabase.from('room_users').insert({
+    room_id: roomId,
+    user_id: userId,
+    nickname: finalNick,
+    order_in_room: order
+  })
+  
+  // Iniciar escuta de traços em tempo real
+  supabase.channel(`room-${roomId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'strokes', filter: `room_id=eq.${roomId}` }, payload => {
+      drawStroke(payload.new)
+    }).subscribe()
+  
+  alert(`Entrou na sala! Seu nick: ${finalNick}`)
+}
+
+// Desenhar no canvas
+canvas.onpointerdown = (e) => { strokePath = [{x:e.offsetX, y:e.offsetY}] }
+canvas.onpointermove = async (e) => {
+  if(strokePath.length) {
+    strokePath.push({x:e.offsetX, y:e.offsetY})
+    drawLine(strokePath, colorPicker.value, sizePicker.value)
+  }
+}
+canvas.onpointerup = async () => {
+  if(strokePath.length) {
+    await supabase.from('strokes').insert({
+      room_id: roomId,
+      user_id: userId,
+      color: colorPicker.value,
+      size: sizePicker.value,
+      path: strokePath
+    })
+    strokePath = []
+  }
+}
+
+// Funções de desenho
+function drawLine(path, color, size) {
+  if(path.length < 2) return
+  ctx.strokeStyle = color
+  ctx.lineWidth = size
+  ctx.beginPath()
+  ctx.moveTo(path[0].x, path[0].y)
+  for(let i=1; i<path.length; i++) ctx.lineTo(path[i].x, path[i].y)
+  ctx.stroke()
+}
+
+function drawStroke(stroke) {
+  drawLine(stroke.path, stroke.color, stroke.size)
+}
+</script>
+
+</body>
+</html>
