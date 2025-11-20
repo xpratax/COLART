@@ -5,10 +5,34 @@
 <title>COLART - Desenho Colaborativo</title>
 <link rel="icon" href="favicon.ico">
 <style>
-  body { margin:0; display:flex; flex-direction:column; height:100vh; font-family:sans-serif; }
-  #toolbar { padding:10px; background:#f0f0f0; display:flex; gap:10px; align-items:center; }
-  #canvas { flex:1; border:1px solid #ccc; touch-action: none; }
-  input, button { padding:5px; }
+  /* Reset e estilo geral */
+  * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI', sans-serif; }
+  body { display:flex; flex-direction:column; height:100vh; background:#0a0a0a; color:#fff; overflow:hidden; }
+
+  /* Toolbar futurista */
+  #toolbar {
+    display:flex; gap:10px; align-items:center; padding:10px;
+    background: linear-gradient(90deg, #1c1c1c, #2a2a2a);
+    border-bottom: 2px solid #00fff7;
+  }
+  #toolbar input, #toolbar button {
+    padding:5px 10px; border:none; border-radius:5px; outline:none;
+    background:#1c1c1c; color:#00fff7; font-weight:bold;
+  }
+  #toolbar input::placeholder { color:#555; }
+  #toolbar button:hover { background:#00fff7; color:#000; cursor:pointer; }
+
+  /* Canvas principal */
+  #canvas { flex:1; background:#101010; cursor:crosshair; display:block; }
+
+  /* Painel de usuários */
+  #userList {
+    position:absolute; top:70px; right:10px; width:200px;
+    background:rgba(0,0,0,0.6); border:1px solid #00fff7; border-radius:5px;
+    padding:10px; max-height:300px; overflow-y:auto;
+  }
+  #userList h3 { margin-bottom:10px; font-size:16px; text-align:center; }
+  #userList div { padding:5px; border-bottom:1px solid #00fff7; }
 </style>
 </head>
 <body>
@@ -19,15 +43,21 @@
   <button id="createRoomBtn">Criar Sala</button>
   <button id="joinRoomBtn">Entrar</button>
   <button id="randomRoomBtn">Sala Aleatória</button>
-  <input type="color" id="colorPicker" value="#000000">
-  <input type="number" id="sizePicker" value="2" min="1" max="10">
+  <input type="color" id="colorPicker" value="#00fff7">
+  <input type="number" id="sizePicker" value="3" min="1" max="15">
 </div>
 
 <canvas id="canvas"></canvas>
 
+<div id="userList">
+  <h3>Usuários na sala</h3>
+  <div id="usersContainer"></div>
+</div>
+
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
 
+// --- SUPABASE CONFIG ---
 const supabaseUrl = 'https://endmojdqpnmxfapmtxik.supabase.co'
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVuZG1vamRxcG5teGZhcG10eGlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NzgxMjUsImV4cCI6MjA3OTI1NDEyNX0.HMZYxnIsUDC93qjdG0LKbZMT6w0g9DwJ1-tDEaaHNvc'
 const supabase = createClient(supabaseUrl, supabaseKey)
@@ -36,19 +66,27 @@ let roomId, userId, nickname, strokePath = []
 
 const canvas = document.getElementById('canvas')
 const ctx = canvas.getContext('2d')
-canvas.width = window.innerWidth
-canvas.height = window.innerHeight - document.getElementById('toolbar').offsetHeight
+const usersContainer = document.getElementById('usersContainer')
+
+// Ajustar canvas para o tamanho da tela
+function resizeCanvas() {
+  canvas.width = window.innerWidth
+  canvas.height = window.innerHeight - document.getElementById('toolbar').offsetHeight
+}
+window.addEventListener('resize', resizeCanvas)
+resizeCanvas()
 
 const colorPicker = document.getElementById('colorPicker')
 const sizePicker = document.getElementById('sizePicker')
+
+// ======== SALAS ========
 
 // Criar Sala
 document.getElementById('createRoomBtn').onclick = async () => {
   const code = Math.random().toString(36).substr(2, 6).toUpperCase()
   const { data, error } = await supabase.from('rooms').insert({ code }).select()
-  if(data) {
-    joinRoom(data[0].id)
-  }
+  if(data && data.length) joinRoom(data[0].id)
+  else alert('Erro ao criar sala!')
 }
 
 // Entrar por Código
@@ -66,7 +104,7 @@ document.getElementById('randomRoomBtn').onclick = async () => {
   else alert('Nenhuma sala disponível!')
 }
 
-// Função para entrar na sala
+// Entrar na sala
 async function joinRoom(id) {
   roomId = id
   nickname = document.getElementById('nick').value || 'colabeiro'
@@ -75,19 +113,22 @@ async function joinRoom(id) {
   const { data:userData } = await supabase.from('users').insert({ nick: nickname }).select()
   userId = userData[0].id
   
-  // Obter ordem na sala
+  // Obter usuários já na sala
   const { data:roomUsers } = await supabase.from('room_users').select().eq('room_id', roomId)
   const order = roomUsers.length + 1
   const finalNick = nickname === 'colabeiro' ? `colabeiro${order}` : nickname
   
+  // Inserir na sala
   await supabase.from('room_users').insert({
     room_id: roomId,
     user_id: userId,
     nickname: finalNick,
     order_in_room: order
   })
+
+  updateUserList()
   
-  // Iniciar escuta de traços em tempo real
+  // Escuta de traços em tempo real
   supabase.channel(`room-${roomId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'strokes', filter: `room_id=eq.${roomId}` }, payload => {
       drawStroke(payload.new)
@@ -96,9 +137,21 @@ async function joinRoom(id) {
   alert(`Entrou na sala! Seu nick: ${finalNick}`)
 }
 
-// Desenhar no canvas
+// Atualiza lista de usuários na sala
+async function updateUserList() {
+  const { data:users } = await supabase.from('room_users').select().eq('room_id', roomId).order('order_in_room')
+  usersContainer.innerHTML = ''
+  users.forEach(u => {
+    const div = document.createElement('div')
+    div.textContent = u.nickname
+    usersContainer.appendChild(div)
+  })
+}
+
+// ======== DESENHO ========
+
 canvas.onpointerdown = (e) => { strokePath = [{x:e.offsetX, y:e.offsetY}] }
-canvas.onpointermove = async (e) => {
+canvas.onpointermove = (e) => {
   if(strokePath.length) {
     strokePath.push({x:e.offsetX, y:e.offsetY})
     drawLine(strokePath, colorPicker.value, sizePicker.value)
@@ -122,6 +175,7 @@ function drawLine(path, color, size) {
   if(path.length < 2) return
   ctx.strokeStyle = color
   ctx.lineWidth = size
+  ctx.lineCap = 'round'
   ctx.beginPath()
   ctx.moveTo(path[0].x, path[0].y)
   for(let i=1; i<path.length; i++) ctx.lineTo(path[i].x, path[i].y)
