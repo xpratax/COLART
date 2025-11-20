@@ -85,9 +85,14 @@ const sizePicker = document.getElementById('sizePicker')
 document.getElementById('createRoomBtn').onclick = async () => {
   const code = Math.random().toString(36).substr(2, 6).toUpperCase()
   const { data, error } = await supabase.from('rooms').insert({ code }).select()
-  if(data && data.length) joinRoom(data[0].id)
-  else alert('Erro ao criar sala!')
+  if(data && data.length) {
+    joinRoom(data[0].id)
+  } else {
+    console.error(error)  // mostra o erro real no console
+    alert('Erro ao criar sala!')  // alerta para o usuário
+  }
 }
+
 
 // Entrar por Código
 document.getElementById('joinRoomBtn').onclick = async () => {
